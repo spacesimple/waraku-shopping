@@ -1,0 +1,24 @@
+{
+  "name": "chirashi-app",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev dist",
+    "dev:sandbox": "wrangler pages dev dist --d1=chirashi-db --local --ip 0.0.0.0 --port 3000",
+    "deploy": "npm run build && wrangler pages deploy dist",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:migrate:local": "wrangler d1 migrations apply chirashi-db --local",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local"
+  },
+  "dependencies": {
+    "hono": "^4.12.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250705.0",
+    "@hono/vite-cloudflare-pages": "^0.4.3",
+    "typescript": "^5.9.3",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}
