@@ -6,6 +6,7 @@ type Bindings = {
   DB: D1Database
   R2: R2Bucket
   OPENAI_API_KEY?: string
+  OPENAI_BASE_URL?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -245,148 +246,35 @@ app.delete('/api/files/:key{.+}', async (c) => {
 })
 
 // ── AI解析 エンドポイント ───────────────────────────────────────
-// 画像URLまたはWebページURLから物件情報を抽出する
+// Node.js AIプロキシ（ポート3001）に転送する
 
 app.post('/api/ai/analyze', async (c) => {
   const userId = await authenticate(c)
   if (!userId) return c.json({ error: '未認証' }, 401)
 
-  const { imageUrl, webUrl } = await c.req.json() as { imageUrl?: string; webUrl?: string }
+  const body = await c.req.json() as any
 
-  const apiKey = c.env.OPENAI_API_KEY
-  if (!apiKey) return c.json({ error: 'AI機能はAPIキーが必要です' }, 503)
-
-  let messages: any[]
-
-  if (imageUrl) {
-    // 画像解析モード
-    messages = [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `この不動産チラシ画像から物件情報を抽出してください。
-以下のJSON形式で返してください。値が不明な場合はnullにしてください。
-
-{
-  "name": "物件名",
-  "catch_copy": "キャッチコピー",
-  "price": 数値（万円）,
-  "price_unit": "万円",
-  "layout": "間取り(例:3LDK)",
-  "area": 数値（専有面積㎡）,
-  "address": "所在地",
-  "station": "最寄り駅名",
-  "walk_minutes": 数値（徒歩分）,
-  "built_year": "築年月(例:2015年築)",
-  "floors": "階数(例:2階建て)",
-  "structure": "構造(例:RC造)",
-  "land_area": 数値または null,
-  "parking": "駐車場情報",
-  "balcony_area": 数値または null,
-  "building_features": "建物の特徴",
-  "surrounding": "周辺環境",
-  "interior": "室内の特徴",
-  "facilities": ["設備名の配列"]
-}
-
-JSONのみを返してください。余分な説明は不要です。`
-          },
-          {
-            type: 'image_url',
-            image_url: { url: imageUrl }
-          }
-        ]
-      }
-    ]
-  } else if (webUrl) {
-    // Webページ解析モード
-    let pageContent = ''
-    try {
-      const res = await fetch(webUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; ChirashiBot/1.0)',
-          'Accept': 'text/html,application/xhtml+xml',
-        }
-      })
-      const html = await res.text()
-      // HTMLタグを除去してテキストのみ抽出
-      pageContent = html
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .substring(0, 6000)
-    } catch {
-      return c.json({ error: 'URLのページを取得できませんでした' }, 400)
-    }
-
-    messages = [
-      {
-        role: 'user',
-        content: `以下の不動産Webページのテキストから物件情報を抽出してください。
-以下のJSON形式で返してください。値が不明な場合はnullにしてください。
-
-{
-  "name": "物件名",
-  "catch_copy": "キャッチコピー（ない場合はAIが生成）",
-  "price": 数値（万円）,
-  "price_unit": "万円",
-  "layout": "間取り(例:3LDK)",
-  "area": 数値（専有面積㎡）,
-  "address": "所在地",
-  "station": "最寄り駅名",
-  "walk_minutes": 数値（徒歩分）,
-  "built_year": "築年月(例:2015年築)",
-  "floors": "階数(例:2階建て)",
-  "structure": "構造(例:RC造)",
-  "land_area": 数値または null,
-  "parking": "駐車場情報",
-  "balcony_area": 数値または null,
-  "building_features": "建物の特徴（ない場合はAIが生成）",
-  "surrounding": "周辺環境",
-  "interior": "室内の特徴",
-  "facilities": ["設備名の配列（駐車場,バス・トイレ別,エアコン,システムキッチン,オートロック,フローリング,バルコニー,エレベーター,宅配ボックス,床暖房,ウォークインクローゼット,追い焚きから選択）"]
-}
-
-JSONのみを返してください。余分な説明は不要です。
-
-Webページテキスト:
-${pageContent}`
-      }
-    ]
-  } else {
-    return c.json({ error: 'imageUrlまたはwebUrlが必要です' }, 400)
+  // クライアントから apiKey が送られた場合、またはサーバー環境変数を使う
+  const payload = {
+    ...body,
+    apiKey: body.apiKey || c.env.OPENAI_API_KEY || undefined,
+    baseUrl: body.baseUrl || c.env.OPENAI_BASE_URL || undefined,
   }
 
   try {
-    const model = imageUrl ? 'gpt-4o' : 'gpt-4o-mini'
-    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    // ローカル Node.js AI プロキシサーバーに転送
+    const proxyRes = await fetch('http://127.0.0.1:3001/ai/analyze', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: 1500,
-        temperature: 0.2,
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     })
-
-    const aiData = await aiRes.json() as any
-    if (!aiRes.ok) throw new Error(aiData.error?.message || 'AI APIエラー')
-
-    const content = aiData.choices?.[0]?.message?.content || ''
-    // JSONを抽出（```json ... ``` ブロックにも対応）
-    const jsonMatch = content.match(/```json\s*([\s\S]+?)\s*```/) || content.match(/\{[\s\S]+\}/)
-    const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : content
-    const parsed = JSON.parse(jsonStr)
-    return c.json({ success: true, data: parsed })
+    const data = await proxyRes.json()
+    return c.json(data, proxyRes.status as any)
   } catch (e: any) {
-    return c.json({ error: `AI解析エラー: ${e.message}` }, 500)
+    // プロキシが起動していない場合
+    return c.json({
+      error: 'AIプロキシサーバーが起動していません。'
+    }, 503)
   }
 })
 
@@ -411,21 +299,46 @@ function getAppHTML() {
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700;900&family=Noto+Serif+JP:wght@400;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <style>
-    * { font-family: 'Noto Sans JP', sans-serif; }
+    * { font-family: 'Noto Sans JP', sans-serif; box-sizing: border-box; }
+    /* 印刷スタイル */
     @media print {
       body > *:not(#print-area) { display: none !important; }
-      #print-area { display: block !important; position: fixed; top: 0; left: 0; width: 100%; }
-      #flyer-print-wrapper { box-shadow: none !important; }
+      #print-area { display: block !important; }
+      #print-area > div { margin: 0; padding: 0; }
+      @page { size: A4; margin: 0; }
     }
     .flyer-pattern2 * { font-family: 'Noto Serif JP', serif; }
+    .tab-btn { border-bottom: 3px solid transparent; transition: all .15s; }
     .tab-btn.active { border-bottom: 3px solid #1a6b3c; color: #1a6b3c; font-weight: 700; }
+    .tab-btn:hover:not(.active) { border-bottom-color: #ccc; color: #555; }
+    .prop-card { transition: all .15s; }
     .prop-card:hover { border-color: #1a6b3c; background: #f0faf4; }
     input:focus, textarea:focus, select:focus { border-color: #1a6b3c !important; outline: none; box-shadow: 0 0 0 3px rgba(26,107,60,0.1); }
+    .pattern-btn { transition: all .15s; }
     .pattern-btn.active { box-shadow: 0 0 0 3px rgba(26,107,60,0.3); }
-    #toast { transition: opacity 0.3s; }
-    .ai-loading { animation: spin 1s linear infinite; }
+    #toast { transition: opacity 0.3s; pointer-events: none; }
+    .ai-loading { animation: spin 1s linear infinite; display: inline-block; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    /* AI ローディングオーバーレイ */
+    #ai-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display: flex; align-items: center; justify-content: center; z-index: 9998;
+    }
+    #ai-overlay .box {
+      background: #fff; border-radius: 20px; padding: 40px 48px;
+      text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    #ai-overlay .spinner {
+      width: 48px; height: 48px; border: 4px solid #e9d5ff;
+      border-top-color: #7c3aed; border-radius: 50%;
+      animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+    }
+    /* スクロールバー細め */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; }
+    ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
   </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -453,6 +366,8 @@ const state = {
   loading: false,
   aiLoading: false,
   subPage: 'basic', // property form sub-tabs
+  userApiKey: localStorage.getItem('chirashi_openai_key') || '',
+  showApiKeyModal: false,
 }
 
 const API_BASE = ''
@@ -491,6 +406,85 @@ function toast(text, type = 'ok') {
   setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.style.display = 'none', 300) }, 3000)
 }
 
+// ── AI Overlay ─────────────────────────────────────────────────
+function showAiOverlay(msg = 'AIが解析中...') {
+  let el = document.getElementById('ai-overlay')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'ai-overlay'
+    document.body.appendChild(el)
+  }
+  el.innerHTML = \`
+  <div class="box">
+    <div class="spinner"></div>
+    <div style="font-weight:700;font-size:15px;color:#4c1d95;margin-bottom:6px;">\${msg}</div>
+    <div style="font-size:12px;color:#888;">しばらくお待ちください...</div>
+  </div>
+  \`
+  el.style.display = 'flex'
+}
+function hideAiOverlay() {
+  const el = document.getElementById('ai-overlay')
+  if (el) el.style.display = 'none'
+}
+
+// ── API Key Modal ──────────────────────────────────────────────
+function renderApiKeyModal() {
+  return \`
+  <div id="apikey-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;">
+    <div style="background:#fff;border-radius:20px;padding:36px 40px;width:460px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <div style="text-align:center;margin-bottom:24px;">
+        <div style="font-size:40px;margin-bottom:8px;">🔑</div>
+        <h2 style="font-size:18px;font-weight:900;color:#1a1a1a;">OpenAI APIキーの設定</h2>
+        <p style="font-size:13px;color:#666;margin-top:6px;">AI自動入力機能を使うにはOpenAI APIキーが必要です</p>
+      </div>
+      <div style="background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:12px;padding:14px 16px;margin-bottom:20px;font-size:12px;color:#0369a1;">
+        <strong>取得方法:</strong> <a href="https://platform.openai.com/api-keys" target="_blank" style="color:#0369a1;font-weight:700;">platform.openai.com</a> → API Keys → Create new secret key
+      </div>
+      <div style="margin-bottom:20px;">
+        <label style="display:block;font-size:12px;font-weight:700;color:#555;margin-bottom:8px;">APIキー（sk-... から始まる）</label>
+        <input id="apikey-input" type="password" placeholder="sk-proj-..." value="\${esc(state.userApiKey||'')}"
+          style="width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:12px;font-size:13px;outline:none;box-sizing:border-box;" />
+      </div>
+      <div style="background:#fefce8;border:1.5px solid #fde68a;border-radius:10px;padding:10px 14px;margin-bottom:20px;font-size:11px;color:#92400e;">
+        <i class="fas fa-shield-alt" style="margin-right:4px;"></i>
+        APIキーはブラウザのローカルストレージにのみ保存され、サーバーには送信されません（リクエスト毎に直接OpenAIに送信）
+      </div>
+      <div style="display:flex;gap:12px;">
+        <button onclick="saveApiKey()" style="flex:1;background:#7c3aed;color:#fff;border:none;padding:12px;border-radius:12px;font-weight:700;cursor:pointer;font-size:14px;">
+          <i class="fas fa-save" style="margin-right:6px;"></i>保存して続ける
+        </button>
+        <button onclick="closeApiKeyModal()" style="border:2px solid #e0e0e0;background:#fff;color:#666;padding:12px 18px;border-radius:12px;font-weight:700;cursor:pointer;font-size:14px;">
+          キャンセル
+        </button>
+      </div>
+      <div style="text-align:center;margin-top:16px;">
+        <button onclick="closeApiKeyModal()" style="font-size:12px;color:#999;background:none;border:none;cursor:pointer;text-decoration:underline;">
+          キーなしで手動入力する
+        </button>
+      </div>
+    </div>
+  </div>
+  \`
+}
+
+function saveApiKey() {
+  const input = document.getElementById('apikey-input')
+  const key = input?.value?.trim()
+  if (key) {
+    state.userApiKey = key
+    localStorage.setItem('chirashi_openai_key', key)
+    toast('APIキーを保存しました')
+  }
+  state.showApiKeyModal = false
+  render()
+}
+
+function closeApiKeyModal() {
+  state.showApiKeyModal = false
+  render()
+}
+
 // ── Render ─────────────────────────────────────────────────────
 function render() {
   const app = document.getElementById('app')
@@ -503,6 +497,13 @@ function render() {
     case 'flyer': app.innerHTML = renderFlyer(); break
   }
   attachEvents()
+  // APIキーモーダルを表示
+  if (state.showApiKeyModal) {
+    const modalEl = document.createElement('div')
+    modalEl.innerHTML = renderApiKeyModal()
+    document.body.appendChild(modalEl.firstElementChild)
+    document.getElementById('apikey-input')?.focus()
+  }
 }
 
 // ── Nav ────────────────────────────────────────────────────────
@@ -516,6 +517,10 @@ function renderNav() {
       <span class="text-gray-400 text-sm hidden sm:block">\${state.user?.email || ''}</span>
       <button onclick="goTo('company')" class="text-white border border-gray-600 rounded-lg px-3 py-1.5 text-sm hover:border-green-400 hover:text-green-400 transition">
         <i class="fas fa-building mr-1"></i>会社情報
+      </button>
+      <button onclick="state.showApiKeyModal=true;render()" class="text-white border border-gray-600 rounded-lg px-3 py-1.5 text-sm hover:border-purple-400 hover:text-purple-400 transition" title="OpenAI APIキー設定">
+        <i class="fas fa-key mr-1"></i><span class="hidden sm:inline">AIキー</span>
+        \${state.userApiKey ? '<span class="ml-1 text-purple-400 text-xs">●</span>' : ''}
       </button>
       <button onclick="handleLogout()" class="text-white border border-gray-600 rounded-lg px-3 py-1.5 text-sm hover:border-red-400 hover:text-red-400 transition">
         <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
@@ -707,36 +712,46 @@ function renderProperty() {
 
       <!-- AI自動入力パネル -->
       <div class="bg-gradient-to-r from-purple-50 to-blue-50 border-2 border-purple-200 rounded-2xl p-5 mb-6">
-        <div class="flex items-center gap-2 mb-3">
-          <span class="text-purple-600 font-black text-sm"><i class="fas fa-magic mr-1"></i>AI自動入力</span>
-          <span class="text-xs text-gray-500">チラシ画像またはURLから物件情報を自動で読み込みます</span>
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="text-purple-600 font-black text-sm"><i class="fas fa-magic mr-1"></i>AI自動入力</span>
+            <span class="text-xs text-gray-500 hidden sm:block">チラシ画像またはURLから物件情報を自動で読み込みます</span>
+          </div>
+          <button onclick="loadSampleData()" class="text-xs font-bold px-3 py-1.5 rounded-lg border-2 border-gray-300 text-gray-600 hover:border-green-500 hover:text-green-700 bg-white transition">
+            <i class="fas fa-database mr-1"></i>サンプルデータ
+          </button>
         </div>
         <div class="flex gap-3 mb-3">
           <button onclick="showAiTab('image')" id="ai-tab-image"
-            class="text-xs font-bold px-3 py-1.5 rounded-lg border-2 \${state.aiTab==='url' ? 'border-gray-200 text-gray-500' : 'border-purple-500 text-purple-700 bg-purple-50'} transition">
+            class="text-xs font-bold px-3 py-1.5 rounded-lg border-2 \${state.aiTab==='url' ? 'border-gray-200 text-gray-500 bg-white' : 'border-purple-500 text-purple-700 bg-purple-50'} transition">
             <i class="fas fa-image mr-1"></i>画像から読み込む
           </button>
           <button onclick="showAiTab('url')" id="ai-tab-url"
-            class="text-xs font-bold px-3 py-1.5 rounded-lg border-2 \${state.aiTab==='url' ? 'border-purple-500 text-purple-700 bg-purple-50' : 'border-gray-200 text-gray-500'} transition">
+            class="text-xs font-bold px-3 py-1.5 rounded-lg border-2 \${state.aiTab==='url' ? 'border-purple-500 text-purple-700 bg-purple-50' : 'border-gray-200 text-gray-500 bg-white'} transition">
             <i class="fas fa-link mr-1"></i>URLから読み込む
           </button>
         </div>
         <div id="ai-panel-image" style="display:\${state.aiTab==='url' ? 'none' : 'block'}">
-          <div class="flex gap-3 items-center">
-            <input type="file" id="ai-image-file" accept="image/*" class="text-xs flex-1 border-2 border-purple-200 rounded-xl px-3 py-2 bg-white" />
-            <button onclick="runAiAnalyzeImage()" class="bg-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-purple-700 transition whitespace-nowrap">
-              \${state.aiLoading ? '<i class="fas fa-spinner ai-loading mr-1"></i>解析中...' : '<i class="fas fa-search mr-1"></i>AIで解析'}
+          <div class="flex gap-3 items-center flex-wrap">
+            <input type="file" id="ai-image-file" accept="image/*"
+              class="text-xs flex-1 min-w-0 border-2 border-purple-200 rounded-xl px-3 py-2 bg-white cursor-pointer" />
+            <button onclick="runAiAnalyzeImage()"
+              class="bg-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-purple-700 transition whitespace-nowrap shadow">
+              <i class="fas fa-search mr-1"></i>AIで解析
             </button>
           </div>
+          <p class="text-xs text-gray-400 mt-2"><i class="fas fa-info-circle mr-1"></i>不動産チラシの画像（JPG/PNG）を選択するとAIが自動で情報を入力します</p>
         </div>
         <div id="ai-panel-url" style="display:\${state.aiTab==='url' ? 'block' : 'none'}">
-          <div class="flex gap-3 items-center">
-            <input type="text" id="ai-web-url" placeholder="https://suumo.jp/..." value="\${state.webUrlInput||''}"
-              class="flex-1 text-xs border-2 border-purple-200 rounded-xl px-3 py-2 bg-white outline-none" />
-            <button onclick="runAiAnalyzeUrl()" class="bg-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-purple-700 transition whitespace-nowrap">
-              \${state.aiLoading ? '<i class="fas fa-spinner ai-loading mr-1"></i>解析中...' : '<i class="fas fa-search mr-1"></i>AIで解析'}
+          <div class="flex gap-3 items-center flex-wrap">
+            <input type="text" id="ai-web-url" placeholder="https://suumo.jp/jj/..." value="\${esc(state.webUrlInput||'')}"
+              class="flex-1 min-w-0 text-xs border-2 border-purple-200 rounded-xl px-3 py-2 bg-white outline-none" />
+            <button onclick="runAiAnalyzeUrl()"
+              class="bg-purple-600 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-purple-700 transition whitespace-nowrap shadow">
+              <i class="fas fa-search mr-1"></i>AIで解析
             </button>
           </div>
+          <p class="text-xs text-gray-400 mt-2"><i class="fas fa-info-circle mr-1"></i>SUUMO、HOME'S などの物件ページURLを入力してください</p>
         </div>
       </div>
 
@@ -964,9 +979,12 @@ function renderFlyer() {
       </div>
     </div>
 
-    <div class="flex gap-3 justify-center">
+    <div class="flex gap-3 justify-center flex-wrap">
       <button onclick="printFlyer()" class="bg-green-700 text-white font-black px-8 py-3 rounded-2xl text-base hover:bg-green-600 transition shadow-lg">
         <i class="fas fa-print mr-2"></i>印刷する
+      </button>
+      <button onclick="downloadFlyer()" class="bg-blue-600 text-white font-black px-8 py-3 rounded-2xl text-base hover:bg-blue-500 transition shadow-lg">
+        <i class="fas fa-download mr-2"></i>PNG保存
       </button>
     </div>
   </div>
@@ -1224,6 +1242,56 @@ function newProperty() {
   goTo('property')
 }
 
+// ── サンプルデータ ──────────────────────────────────────────────
+function loadSampleData() {
+  const samples = [
+    {
+      name: '緑ヶ丘シティレジデンス 302号室',
+      catch_copy: '都心へ直通15分！緑豊かな閑静な住宅地',
+      price: 4280, price_unit: '万円', layout: '3LDK',
+      area: 78.5, address: '東京都世田谷区緑ヶ丘1-23-45',
+      station: '自由が丘駅', walk_minutes: 8,
+      built_year: '2018年築', floors: '10階建て 3階', structure: 'RC造',
+      land_area: null, parking: '空きあり（月額15,000円）', balcony_area: 12.3,
+      building_features: '全室南向き・採光良好。リノベーション済みで設備新品。',
+      surrounding: 'スーパー徒歩3分、小学校徒歩5分、公園隣接。',
+      interior: 'システムキッチン・浴室乾燥機・床暖房完備。',
+      facilities: ['バス・トイレ別', 'エアコン', 'システムキッチン', 'オートロック', 'フローリング', 'バルコニー', 'エレベーター', '宅配ボックス', '床暖房'],
+    },
+    {
+      name: 'パークビュー麻布十番',
+      catch_copy: '希少な低層マンション。都心のオアシス。',
+      price: 12800, price_unit: '万円', layout: '2LDK',
+      area: 92.0, address: '東京都港区麻布十番2-10-8',
+      station: '麻布十番駅', walk_minutes: 3,
+      built_year: '2020年築', floors: '5階建て 4階', structure: 'SRC造',
+      land_area: null, parking: '有（月額55,000円）', balcony_area: 18.0,
+      building_features: '天井高2.7m、大理石フロア、輸入キッチン。',
+      surrounding: '六本木ヒルズ徒歩10分、商店街徒歩1分。',
+      interior: 'デザイナーズ仕様。ビルトインガレージ付き。',
+      facilities: ['バス・トイレ別', 'エアコン', 'システムキッチン', 'オートロック', 'フローリング', 'バルコニー', 'エレベーター', '宅配ボックス', '床暖房', 'ウォークインクローゼット', '追い焚き'],
+    },
+    {
+      name: '虹ヶ丘ファミリータウン 中古戸建て',
+      catch_copy: '子育て世代に人気！広々4LDK・駐車2台可',
+      price: 3580, price_unit: '万円', layout: '4LDK',
+      area: 105.2, address: '神奈川県横浜市緑区虹ヶ丘1-5-12',
+      station: '中山駅', walk_minutes: 12,
+      built_year: '2010年築', floors: '2階建て', structure: '木造',
+      land_area: 148.5, parking: '2台可', balcony_area: 8.0,
+      building_features: '2024年外壁塗装・屋根修繕済。太陽光パネル搭載。',
+      surrounding: '小学校まで徒歩2分。大型ショッピングモール車5分。',
+      interior: 'リビング22帖・対面キッチン。全室収納完備。',
+      facilities: ['駐車場', 'バス・トイレ別', 'エアコン', 'システムキッチン', 'フローリング', 'バルコニー', '床暖房', 'ウォークインクローゼット'],
+    },
+  ]
+  const sample = samples[Math.floor(Math.random() * samples.length)]
+  state.currentProp = { ...(state.currentProp || {}), ...sample }
+  state.subPage = 'basic'
+  render()
+  toast('サンプルデータを読み込みました！内容を確認・修正してください')
+}
+
 // ── AI 解析 ────────────────────────────────────────────────────
 async function runAiAnalyzeImage() {
   const fileInput = document.getElementById('ai-image-file')
@@ -1234,17 +1302,27 @@ async function runAiAnalyzeImage() {
   const reader = new FileReader()
   reader.onload = async (e) => {
     const base64 = e.target.result
-    state.aiLoading = true
-    render()
+    showAiOverlay('チラシ画像を解析中...')
     try {
-      const res = await api.post('/api/ai/analyze', { imageUrl: base64 })
-      if (res.data) fillFormFromAI(res.data)
-      toast('AIが物件情報を読み込みました！フォームを確認してください')
+      const payload = { imageUrl: base64 }
+      if (state.userApiKey) payload.apiKey = state.userApiKey
+      const res = await api.post('/api/ai/analyze', payload)
+      hideAiOverlay()
+      if (res.needApiKey) {
+        state.showApiKeyModal = true; render()
+        return
+      }
+      if (res.data) {
+        fillFormFromAI(res.data)
+        toast('✨ AIが物件情報を読み込みました！内容を確認・修正してください')
+      }
     } catch(err) {
-      toast(err.message, 'err')
-    } finally {
-      state.aiLoading = false
-      render()
+      hideAiOverlay()
+      if (err.message.includes('503') || err.message.includes('APIキー') || err.message.includes('needApiKey')) {
+        state.showApiKeyModal = true; render()
+      } else {
+        toast('AI解析エラー: ' + err.message, 'err')
+      }
     }
   }
   reader.readAsDataURL(file)
@@ -1254,26 +1332,43 @@ async function runAiAnalyzeUrl() {
   const urlInput = document.getElementById('ai-web-url')
   const webUrl = urlInput?.value?.trim()
   if (!webUrl) { toast('URLを入力してください', 'err'); return }
+  if (!webUrl.startsWith('http')) { toast('http または https から始まるURLを入力してください', 'err'); return }
   state.webUrlInput = webUrl
-  state.aiLoading = true
-  render()
+  showAiOverlay('Webページを解析中...')
   try {
-    const res = await api.post('/api/ai/analyze', { webUrl })
-    if (res.data) fillFormFromAI(res.data)
-    toast('AIがWebページから物件情報を読み込みました！')
+    const payload = { webUrl }
+    if (state.userApiKey) payload.apiKey = state.userApiKey
+    const res = await api.post('/api/ai/analyze', payload)
+    hideAiOverlay()
+    if (res.needApiKey) {
+      state.showApiKeyModal = true; render()
+      return
+    }
+    if (res.data) {
+      fillFormFromAI(res.data)
+      toast('✨ AIがWebページから物件情報を読み込みました！内容を確認してください')
+    }
   } catch(err) {
-    toast(err.message, 'err')
-  } finally {
-    state.aiLoading = false
-    render()
+    hideAiOverlay()
+    if (err.message.includes('503') || err.message.includes('APIキー')) {
+      state.showApiKeyModal = true; render()
+    } else {
+      toast('AI解析エラー: ' + err.message, 'err')
+    }
   }
 }
 
 function fillFormFromAI(data) {
-  // stateに保存
-  state.currentProp = { ...(state.currentProp || {}), ...data }
+  // nullを除外してstateにマージ
+  const cleaned = {}
+  for (const [k, v] of Object.entries(data)) {
+    if (v !== null && v !== undefined && v !== '') cleaned[k] = v
+  }
+  state.currentProp = { ...(state.currentProp || {}), ...cleaned }
   state.subPage = 'basic'
   render()
+  // ページ上部にスクロール
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 // ── Auth ───────────────────────────────────────────────────────
@@ -1343,8 +1438,36 @@ function printFlyer() {
   const preview = document.getElementById('flyer-preview')
   if (!preview) return
   const printArea = document.getElementById('print-area')
-  printArea.innerHTML = \`<div id="flyer-print-wrapper" style="box-shadow:none;">\${preview.innerHTML}</div>\`
+  printArea.innerHTML = \`<div id="flyer-print-wrapper">\${preview.innerHTML}</div>\`
+  printArea.style.display = 'block'
   window.print()
+  setTimeout(() => { printArea.style.display = 'none' }, 100)
+}
+
+async function downloadFlyer() {
+  const preview = document.getElementById('flyer-preview')
+  if (!preview || typeof html2canvas === 'undefined') {
+    toast('ダウンロード機能を読み込み中です。しばらくお待ちください。', 'err')
+    return
+  }
+  toast('PNG画像を生成中...')
+  try {
+    const canvas = await html2canvas(preview, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+    })
+    const link = document.createElement('a')
+    const propName = (state.currentProp?.name || 'chirashi').replace(/[/\\\\:*?"<>|]/g, '_').substring(0, 30)
+    link.download = \`\${propName}_pattern\${state.selectedPattern}.png\`
+    link.href = canvas.toDataURL('image/png')
+    link.click()
+    toast('PNGを保存しました')
+  } catch(e) {
+    toast('PNG生成エラー: ' + e.message, 'err')
+  }
 }
 
 // ── Events ─────────────────────────────────────────────────────

@@ -12,7 +12,8 @@
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local"
   },
   "dependencies": {
-    "hono": "^4.12.12"
+    "hono": "^4.12.12",
+    "openai": "^6.34.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250705.0",

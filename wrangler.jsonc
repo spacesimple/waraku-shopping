@@ -17,4 +17,5 @@
       "bucket_name": "chirashi-files"
     }
   ]
+  // .dev.vars から OPENAI_API_KEY と OPENAI_BASE_URL が自動で読み込まれます
 }
