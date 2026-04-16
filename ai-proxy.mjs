@@ -222,7 +222,13 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && req.url === '/health') {
-    jsonRes(res, { ok: true, hasApiKey: !!DEFAULT_API_KEY })
+    // DEFAULT_API_KEYが設定されていても無効な可能性があるため
+    // ユーザーに「自分のAPIキーを使う」ことを促す情報を追加
+    jsonRes(res, { 
+      ok: true, 
+      hasApiKey: !!DEFAULT_API_KEY,
+      note: DEFAULT_API_KEY ? 'GenSpark proxy key configured (may be expired)' : 'No API key set'
+    })
     return
   }
 
@@ -238,7 +244,12 @@ const server = createServer(async (req, res) => {
       const { imageUrl, webUrl, pdfText, apiKey: userApiKey, baseUrl: userBaseUrl } = JSON.parse(body)
 
       const apiKey = userApiKey || DEFAULT_API_KEY
-      const baseUrl = userBaseUrl || DEFAULT_BASE_URL
+      // ユーザーが独自キー(sk-...)を指定した場合はOpenAI公式を使う
+      // GenSpark proxy用のキー(8文字英数字)の場合はGenSparkプロキシを使う
+      let baseUrl = userBaseUrl || DEFAULT_BASE_URL
+      if (userApiKey && (userApiKey.startsWith('sk-') || userApiKey.startsWith('sk-proj-'))) {
+        baseUrl = userBaseUrl || 'https://api.openai.com/v1'
+      }
 
       if (!apiKey) {
         jsonRes(res, {
@@ -251,7 +262,7 @@ const server = createServer(async (req, res) => {
       let messages, model
 
       if (imageUrl) {
-        model = 'gpt-4o'
+        model = 'gpt-5'
         messages = [{
           role: 'user',
           content: [
@@ -269,7 +280,7 @@ const server = createServer(async (req, res) => {
 
       } else if (pdfText) {
         // PDFテキスト解析（クライアント側でpdf.jsが抽出したテキスト）
-        model = 'gpt-4o'
+        model = 'gpt-5'
         messages = [{
           role: 'user',
           content: `以下は不動産チラシPDFから抽出したテキストです。物件情報をできる限りすべて抽出してください。\n${FULL_PROPERTY_SCHEMA}\n\n--- PDFテキスト ---\n${pdfText.substring(0, 10000)}`
@@ -277,7 +288,7 @@ const server = createServer(async (req, res) => {
         console.log(`[AI Proxy] PDF text analysis, text length: ${pdfText.length}`)
 
       } else if (webUrl) {
-        model = 'gpt-4o'
+        model = 'gpt-5'
         let pageContent = ''
         try {
           const pageRes = await fetch(webUrl, {
