@@ -15,7 +15,7 @@ const state = {
   subPage: 'basic',
   aiTab: 'image',
   webUrlInput: '',
-  userApiKey: localStorage.getItem('chirashi_openai_key') || '',
+  userApiKey: localStorage.getItem('chirashi_gemini_key') || '',
   showApiKeyModal: false,
 }
 
@@ -104,7 +104,7 @@ function renderNav() {
       <button onclick="goTo('company')" class="text-white border border-gray-600 rounded-lg px-2.5 py-1.5 text-xs hover:border-green-400 hover:text-green-400 transition">
         <i class="fas fa-building mr-1"></i>会社情報
       </button>
-      <button onclick="state.showApiKeyModal=true;render()" class="text-white border border-gray-600 rounded-lg px-2.5 py-1.5 text-xs hover:border-purple-400 hover:text-purple-400 transition" title="OpenAI APIキー設定">
+      <button onclick="state.showApiKeyModal=true;render()" class="text-white border border-gray-600 rounded-lg px-2.5 py-1.5 text-xs hover:border-purple-400 hover:text-purple-400 transition" title="Gemini APIキー設定">
         <i class="fas fa-key mr-1"></i>AIキー
         ${state.userApiKey ? '<span class="text-purple-400">●</span>' : ''}
       </button>
@@ -124,17 +124,17 @@ function renderApiKeyModal() {
     <div style="background:#fff;border-radius:20px;padding:36px 40px;width:460px;max-width:92vw;">
       <div style="text-align:center;margin-bottom:20px;">
         <div style="font-size:36px;margin-bottom:8px;">🔑</div>
-        <h2 style="font-size:18px;font-weight:900;">OpenAI APIキーの設定</h2>
-        <p style="font-size:12px;color:#666;margin-top:4px;">AI自動入力機能を使うには有効なAPIキーが必要です</p>
+        <h2 style="font-size:18px;font-weight:900;">Gemini APIキーの設定</h2>
+        <p style="font-size:12px;color:#666;margin-top:4px;">AI自動入力機能を使うには有効なGemini APIキーが必要です</p>
       </div>
       <div style="background:#fff3e0;border:1.5px solid #ffcc80;border-radius:10px;padding:12px;margin-bottom:12px;font-size:11px;color:#e65100;">
-        ⚠️ システムのAPIキーが無効または期限切れのため、お手持ちのOpenAI APIキーが必要です。
+        ⚠️ システムのAPIキーが無効または期限切れのため、お手持ちのGemini APIキーが必要です。
       </div>
       <div style="background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:10px;padding:12px;margin-bottom:16px;font-size:11px;color:#0369a1;">
-        取得方法：<a href="https://platform.openai.com/api-keys" target="_blank" style="font-weight:700;">platform.openai.com</a> → API Keys → Create new secret key<br>
+        取得方法：Google Cloud Console で Gemini API キーを発行してください。<br>
         入力したキーはブラウザのローカルストレージに保存され、サーバーには送信されません。
       </div>
-      <input id="apikey-input" type="password" placeholder="sk-proj-..." value="${esc(state.userApiKey||'')}"
+      <input id="apikey-input" type="password" placeholder="YOUR_GEMINI_API_KEY" value="${esc(state.userApiKey||'')}"
         style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:12px;font-size:13px;margin-bottom:16px;box-sizing:border-box;" />
       <div style="display:flex;gap:10px;">
         <button onclick="saveApiKey()" style="flex:1;background:#7c3aed;color:#fff;border:none;padding:12px;border-radius:12px;font-weight:700;cursor:pointer;">保存</button>
@@ -145,7 +145,7 @@ function renderApiKeyModal() {
 }
 function saveApiKey() {
   const k = document.getElementById('apikey-input')?.value?.trim()
-  if (k) { state.userApiKey = k; localStorage.setItem('chirashi_openai_key', k); toast('APIキーを保存しました') }
+  if (k) { state.userApiKey = k; localStorage.setItem('chirashi_gemini_key', k); toast('APIキーを保存しました') }
   state.showApiKeyModal = false; render()
 }
 function closeApiKeyModal() { state.showApiKeyModal = false; render() }

@@ -7,7 +7,7 @@
 
 ## 🔗 URLs
 - **サンドボックス**: http://localhost:3000
-- **AIプロキシ**: http://localhost:3001
+- **AI解析**: Cloudflare Worker 内で Gemini を直接利用
 
 ## 📐 アーキテクチャ
 
@@ -21,9 +21,7 @@
     ├── CRUD /api/properties/* → D1物件データ
     ├── POST /api/upload → R2画像保存
     ├── GET /api/files/* → R2画像取得
-    └── POST /api/ai/analyze → 転送 ↓
-                            [Node.js AIプロキシ: ポート3001]
-                                └── POST /ai/analyze → OpenAI API
+    └── POST /api/ai/analyze → Gemini / ローカル解析
 ```
 
 ## ✅ 実装済み機能
@@ -34,8 +32,8 @@
 | 会社情報管理 | 会社名/電話/住所/宅建業者番号をD1に保存 |
 | 物件管理 | 基本情報・詳細・設備のCRUD（D1） |
 | 画像アップロード | R2ストレージへ保存・表示 |
-| **AI自動入力** ✨ | チラシ画像からGPT-4o-visionで物件情報抽出 |
-| **URL解析** ✨ | 不動産サイトURLからGPT-4o-miniで物件情報抽出 |
+| **AI自動入力** ✨ | 画像・PDF・URLから物件情報を解析。Gemini またはローカル解析で動作 |
+| **URL解析** ✨ | 不動産サイトURLから物件情報を抽出 |
 | サンプルデータ | ワンクリックでサンプル物件を読み込み |
 | 3パターンチラシ | モダン（緑）/ ラグジュアリー（紺×金）/ ポップ（オレンジ） |
 | 印刷 | window.print() でA4印刷 |
@@ -58,17 +56,17 @@
 ### 方法1: サーバー側のAPIキー（本番環境）
 `.dev.vars` に設定:
 ```
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.openai.com/v1
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta2
 ```
 
 ### 方法2: ブラウザ側で入力（ユーザーが自分のキーを使用）
-ナビバーの「🔑 AIキー」ボタンからOpenAI APIキーを入力
+ナビバーの「🔑 AIキー」ボタンからGemini APIキーを入力
 → ローカルストレージに保存、リクエスト毎に直接送信
 
 ### 対応モデル
-- 画像解析: `gpt-4o` (vision対応)
-- テキスト/URL解析: `gpt-4o-mini`
+- テキスト解析: `gemini-1.5-mini` (Gemini)
+- 画像解析: Gemini API が必要。ただし、クラウド接続がない場合はPDF/URLのローカル解析にフォールバックします。
 
 ## 👤 ユーザーガイド
 
@@ -98,7 +96,6 @@ pm2 start ecosystem.config.cjs
 
 # またはサービス個別起動
 npx wrangler pages dev dist --d1=chirashi-db --local --ip 0.0.0.0 --port 3000
-node ai-proxy.mjs
 ```
 
 ## ☁️ Cloudflare本番デプロイ
@@ -115,7 +112,7 @@ wrangler r2 bucket create chirashi-files
 wrangler d1 migrations apply chirashi-db
 
 # AIキー設定（本番）
-wrangler pages secret put OPENAI_API_KEY
+wrangler pages secret put GEMINI_API_KEY
 
 # デプロイ
 npm run deploy

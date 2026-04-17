@@ -5,8 +5,9 @@ import { serveStatic } from 'hono/cloudflare-workers'
 type Bindings = {
   DB: D1Database
   R2: R2Bucket
-  OPENAI_API_KEY?: string
-  OPENAI_BASE_URL?: string
+  GEMINI_API_KEY?: string
+  GEMINI_BASE_URL?: string
+  GEMINI_MODEL?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -25,6 +26,152 @@ function jsonRes(data: unknown, status = 200) {
 
 function uuid() {
   return crypto.randomUUID()
+}
+
+function normalizeText(text: string) {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function parseNumber(text: string | null | undefined) {
+  if (!text) return null
+  const cleaned = String(text).replace(/[^\n0-9.\-]/g, '')
+  const parsed = Number(cleaned)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseYenToMan(text: string | null | undefined) {
+  const value = parseNumber(text)
+  if (value === null) return null
+  return Math.round(value / 10000)
+}
+
+function extractOne(regex: RegExp, text: string) {
+  const match = text.match(regex)
+  return match ? match[1].trim() : null
+}
+
+function localPropertyParse(text: string) {
+  const normalized = normalizeText(text)
+  const result: Record<string, unknown> = {}
+
+  result.name = extractOne(/(?:物件名|名称)\s*[:：]\s*([^\n]+)/i, normalized)
+  result.address = extractOne(/(?:所在地|住所)\s*[:：]\s*([^\n]+)/i, normalized)
+  result.station = extractOne(/(?:最寄駅|駅名)\s*[:：]?\s*([^\n,]+)/i, normalized)
+  result.walk_minutes = parseNumber(extractOne(/徒歩\s*約?\s*([0-9]{1,3})\s*分/i, normalized))
+  result.area = parseNumber(extractOne(/(?:専有面積|面積)\s*[:：]?\s*([0-9.,]+)\s*㎡/i, normalized))
+  result.layout = extractOne(/間取り\s*[:：]?\s*([^\n]+)/i, normalized)
+  result.structure = extractOne(/構造\s*[:：]?\s*([^\n]+)/i, normalized)
+  result.built_year = extractOne(/(?:築年数|築年|建築年)\s*[:：]?\s*([^\n]+)/i, normalized)
+  result.parking = extractOne(/駐車場\s*[:：]?\s*([^\n]+)/i, normalized)
+  result.pet = extractOne(/ペット\s*[:：]?\s*([^\n]+)/i, normalized)
+
+  const priceText = extractOne(/(?:賃料|価格)\s*[:：]?\s*¥?\s*([0-9,\.]+)/i, normalized)
+  const price = parseYenToMan(priceText)
+  if (price !== null) {
+    result.price = price
+    result.price_unit = '万円'
+  }
+
+  const managementFeeText = extractOne(/管理費\s*[:：]?\s*¥?\s*([0-9,\.]+)/i, normalized)
+  const managementFee = parseYenToMan(managementFeeText)
+  if (managementFee !== null) result.kanrihi = managementFee
+
+  const commonServiceFeeText = extractOne(/共益費\s*[:：]?\s*¥?\s*([0-9,\.]+)/i, normalized)
+  const commonServiceFee = parseYenToMan(commonServiceFeeText)
+  if (commonServiceFee !== null) result.kyoeki = commonServiceFee
+
+  const points = extractOne(/(?:おすすめポイント|PR)\s*[:：]?\s*([^\n]+)/i, normalized)
+  if (points) result['おすすめポイント'] = points.split(/[、,\n]/).map(s => s.trim()).filter(Boolean)
+
+  return result
+}
+
+async function callGemini(prompt: string, apiKey: string, baseUrl: string, model: string, maxTokens = 2048) {
+  const normalizedBase = baseUrl.replace(/\/+$/, '')
+  const useQueryKey = apiKey && !apiKey.startsWith('Bearer ') && !apiKey.startsWith('ya29.')
+  const url = `${normalizedBase}/models/${model}:generate${useQueryKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (!useQueryKey && apiKey) {
+    headers.Authorization = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`
+  }
+
+  const body = {
+    prompt: { text: prompt },
+    temperature: 0.1,
+    maxOutputTokens: maxTokens,
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+
+  const data = await res.json()
+  if (!res.ok) {
+    const err = data.error?.message || data.error_description || data.message || `Gemini API error (${res.status})`
+    throw new Error(err)
+  }
+
+  const candidate = data?.candidates?.[0]
+  let text = ''
+  if (candidate) {
+    if (typeof candidate.outputText === 'string') text = candidate.outputText
+    else if (candidate.output?.[0]?.content) {
+      const content = candidate.output[0].content
+      if (Array.isArray(content)) {
+        const textBlock = content.find((item: any) => item.type === 'output_text' || item.type === 'text')
+        text = textBlock?.text || ''
+      } else if (typeof content === 'string') {
+        text = content
+      }
+    }
+  }
+  if (!text && typeof data?.outputText === 'string') text = data.outputText
+  if (!text) throw new Error('Geminiのレスポンスからテキストを抽出できませんでした')
+  return text
+}
+
+async function fetchPageText(webUrl: string) {
+  const pageRes = await fetch(webUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+    },
+    redirect: 'follow',
+  })
+  const html = await pageRes.text()
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<!--([\s\S]*?)-->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+async function localAnalyze(text: string) {
+  return localPropertyParse(text)
+}
+
+async function remoteAnalyze(prompt: string, apiKey: string, baseUrl: string, model: string) {
+  const text = await callGemini(prompt, apiKey, baseUrl, model, 2048)
+  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]+?)\s*```/) || text.match(/(\{[\s\S]+\})/)
+  const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : text
+  try {
+    return JSON.parse(jsonStr.trim())
+  } catch {
+    throw new Error(`AIがJSON形式で返答しませんでした: ${text.substring(0, 150)}`)
+  }
 }
 
 async function hashPassword(password: string) {
@@ -290,30 +437,91 @@ app.delete('/api/properties/:id', async (c) => {
 })
 
 
-// ── AI解析プロキシ ──
+// ── 画像アップロード / ファイル取得 ─────────────────────────────────
+app.post('/api/upload', async (c) => {
+  try {
+    const form = await c.req.formData()
+    const file = form.get('file')
+    if (!file || !(file instanceof File)) return c.json({ error: 'ファイルが必要です' }, 400)
+    const folder = String(form.get('folder') || 'uploads').replace(/[^a-zA-Z0-9_-]/g, '') || 'uploads'
+    const ext = (file.name?.split('.').pop() || 'bin').replace(/[^a-zA-Z0-9]/g, '') || 'bin'
+    const key = `${folder}/${crypto.randomUUID()}.${ext}`
+    const arrayBuffer = await file.arrayBuffer()
+    await c.env.R2.put(key, arrayBuffer, {
+      httpMetadata: { contentType: file.type || 'application/octet-stream' }
+    })
+    return c.json({ success: true, key })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'アップロードエラー' }, 500)
+  }
+})
+
+app.get('/api/files/*', async (c) => {
+  const key = c.req.param('*')
+  if (!key) return c.json({ error: 'ファイルキーが必要です' }, 400)
+  const object = await c.env.R2.get(decodeURIComponent(key))
+  if (!object || !object.body) return c.json({ error: 'ファイルが見つかりませんでした' }, 404)
+  const headers = new Headers()
+  headers.set('Content-Type', object.httpMetadata?.contentType || object.metadata?.contentType || 'application/octet-stream')
+  return new Response(object.body, { headers })
+})
+
+// ── AI解析 ────────────────────────────────────────────────────
 app.post('/api/ai/analyze', async (c) => {
   try {
-    const body = await c.req.json()
-    // APIキーをenv優先、次にクライアントから受信
-    const apiKey = body.apiKey || c.env.OPENAI_API_KEY || ''
-    const baseUrl = body.baseUrl || c.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-    const payload = { ...body, apiKey, baseUrl }
-    const proxyRes = await fetch('http://127.0.0.1:3001/ai/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const data = await proxyRes.json()
-    return c.json(data, proxyRes.status as 200)
-  } catch (e: any) {
-    if (e.message?.includes('ECONNREFUSED') || e.message?.includes('fetch')) {
-      return c.json({ error: 'AIプロキシサーバーが起動していません。', needApiKey: false }, 503)
+    const body = await c.req.json() as any
+    const { imageUrl, webUrl, pdfText, apiKey: userApiKey, baseUrl: userBaseUrl } = body
+    const apiKey = userApiKey || c.env.GEMINI_API_KEY || ''
+    const baseUrl = userBaseUrl || c.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta2'
+    const model = c.env.GEMINI_MODEL || 'gemini-1.5-mini'
+
+    let data: any = {}
+    let localFallback = false
+
+    if (imageUrl) {
+      if (!apiKey) {
+        return c.json({ error: '画像解析にはGemini APIキーが必要です。', needApiKey: true }, 400)
+      }
+      const prompt = `以下は不動産チラシの画像を表すBase64文字列です。できる限り物件情報を抽出し、次のJSONスキーマに従ってJSONのみを返してください。\n${FULL_PROPERTY_SCHEMA}\n\n画像データ(Base64):\n${imageUrl}`
+      data = await remoteAnalyze(prompt, apiKey, baseUrl, model)
+    } else if (pdfText) {
+      if (apiKey) {
+        try {
+          const prompt = `以下の不動産チラシPDF抽出テキストから物件情報を抽出し、次のJSONスキーマに従ってJSONのみを返してください。\n${FULL_PROPERTY_SCHEMA}\n\n--- PDFテキスト ---\n${pdfText.substring(0, 20000)}`
+          data = await remoteAnalyze(prompt, apiKey, baseUrl, model)
+        } catch (e: any) {
+          data = await localAnalyze(pdfText)
+          localFallback = true
+        }
+      } else {
+        data = await localAnalyze(pdfText)
+        localFallback = true
+      }
+    } else if (webUrl) {
+      const pageText = await fetchPageText(webUrl)
+      if (apiKey) {
+        try {
+          const prompt = `以下の不動産Webページテキストから物件情報を抽出し、次のJSONスキーマに従ってJSONのみを返してください。\n${FULL_PROPERTY_SCHEMA}\n\n--- Webページテキスト ---\n${pageText.substring(0, 20000)}`
+          data = await remoteAnalyze(prompt, apiKey, baseUrl, model)
+        } catch (e: any) {
+          data = await localAnalyze(pageText)
+          localFallback = true
+        }
+      } else {
+        data = await localAnalyze(pageText)
+        localFallback = true
+      }
+    } else {
+      return c.json({ error: 'imageUrl, pdfText, または webUrl が必要です' }, 400)
     }
+
+    return c.json({ success: true, data, localFallback })
+  } catch (e: any) {
     return c.json({ error: e.message || 'AI解析エラー' }, 500)
   }
 })
 
-// ── フロントエンドSPAルート ──
+// ── フロントエンドSPAルート ─────────────────────────────────
 app.get('/', (c) => c.html(getAppHTML()))
 app.get('*', (c) => c.html(getAppHTML()))
 

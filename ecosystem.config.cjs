@@ -11,17 +11,6 @@ module.exports = {
       watch: false,
       instances: 1,
       exec_mode: 'fork'
-    },
-    {
-      name: 'chirashi-ai',
-      script: './ai-proxy.mjs',
-      interpreter: 'node',
-      env: {
-        NODE_ENV: 'development',
-      },
-      watch: false,
-      instances: 1,
-      exec_mode: 'fork'
     }
   ]
 }
