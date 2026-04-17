@@ -1,21 +1,43 @@
+
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "chirashi-app",
+    "account_id": "ac1beb82c3ff54999e7315867b81c076",
   "compatibility_date": "2026-04-12",
   "pages_build_output_dir": "./dist",
   "compatibility_flags": ["nodejs_compat"],
+  
+  // ローカル開発用
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "chirashi-db",
+      "database_name": "ai_real_estate_flyer",
       "database_id": "local-dev"
     }
   ],
   "r2_buckets": [
     {
       "binding": "R2",
-      "bucket_name": "chirashi-files"
+      "bucket_name": "ai-real-estate-flyer"
     }
-  ]
-  // .dev.vars から GEMINI_API_KEY と GEMINI_BASE_URL / GEMINI_MODEL を自動で読み込みます
+  ],
+  
+  // Production環境用
+  "env": {
+    "production": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ai_real_estate_flyer",
+          "database_id": "1338ab1f-cdb6-44b4-b4dd-c614927e342e"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "R2",
+          "bucket_name": "ai-real-estate-flyer"
+        }
+      ]
+    }
+  }
 }
